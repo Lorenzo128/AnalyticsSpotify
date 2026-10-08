@@ -4,6 +4,7 @@ Figures are built with the light-mode palette. The page swaps in the dark
 steps and theme chrome at render time (see `report.py`), so every color used
 here must come from the constants below.
 """
+import numpy as np
 import plotly.graph_objects as go
 
 # Categorical slots, in fixed order (validated light/dark pairs).
@@ -146,4 +147,61 @@ def grouped(df, *, height=300, pct=True):
                     hovertemplate=f"{col}: %{{y:{'.0%' if pct else ',.0f'}}}<extra></extra>")
     fig.update_layout(hovermode="x unified", margin=dict(t=40), bargap=0.3, bargroupgap=0.08)
     fig.update_yaxes(tickformat=".0%" if pct else None)
+    return fig
+
+
+SYMBOLS = ["circle", "square", "diamond", "triangle-up", "triangle-down", "pentagon", "hexagon", "circle-open"]
+
+
+def network(nodes, edges, names, label_per_scene=3, height=640):
+    """Artist co-listening map: one trace per scene (color + symbol), edges as hairlines."""
+    fig = _fig(height, **_legend_top())
+    ex, ey = [], []
+    for x0, y0, x1, y1 in edges:
+        ex += [x0, x1, None]
+        ey += [y0, y1, None]
+    fig.add_scatter(x=ex, y=ey, mode="lines", line=dict(color=DEEMPH, width=0.6), hoverinfo="skip",
+                    showlegend=False, name="links")
+    labelled = set(nodes.sort_values("hours", ascending=False).groupby("group").head(label_per_scene)["artist"])
+    size_ref = nodes["hours"].max()
+    for gid in sorted(nodes["group"].unique()):
+        g = nodes[nodes["group"] == gid]
+        other = gid not in names or names[gid] == "Other scenes"
+        color = DEEMPH if other else SERIES[int(gid) % 8]
+        fig.add_scatter(
+            x=g["x"], y=g["y"], name=names.get(gid, "Other scenes"),
+            mode="markers+text", text=[a if a in labelled else "" for a in g["artist"]],
+            textposition="top center", customdata=g[["artist", "hours"]].values,
+            marker=dict(size=(8 + 30 * (g["hours"] / size_ref) ** 0.5), color=color,
+                        symbol=SYMBOLS[int(gid) % 8] if not other else "circle",
+                        line=dict(width=2, color="#fcfcfb")),
+            hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]:.0f} h<extra>%{fullData.name}</extra>")
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False, rangemode="normal")
+    fig.update_layout(margin=dict(t=60, l=4, r=4, b=4))
+    return fig
+
+
+def matrix_heatmap(mat, *, xtitle=None, colorbar="", hover="%{z:.0%}", pct=True, height=320, zmax=None):
+    fig = _fig(height)
+    z = mat.values.astype(float)
+    fig.add_heatmap(z=np.round(z, 3), x=[str(c) for c in mat.columns], y=[str(i) for i in mat.index],
+                    colorscale=_scale(SEQ_LIGHT), xgap=2, ygap=2, zmin=0, zmax=zmax,
+                    colorbar=dict(title=dict(text=colorbar, side="right"), thickness=10, outlinewidth=0,
+                                  tickformat=".0%" if pct else None),
+                    hovertemplate=f"%{{y}} · %{{x}}<br>{hover}<extra></extra>", hoverongaps=False)
+    fig.update_yaxes(autorange="reversed", showgrid=False, rangemode="normal", type="category")
+    fig.update_xaxes(title=xtitle, type="category")
+    return fig
+
+
+def survival(curves, height=320):
+    fig = _fig(height, **_legend_top())
+    for i, (name, s) in enumerate(curves.items()):
+        fig.add_scatter(x=(s.index / 30.44).round(2), y=s.values.round(4), name=name, mode="lines",
+                        line=dict(color=SERIES[i], width=2, shape="hv"),
+                        hovertemplate=f"{name}<br>after %{{x:.0f}} months: %{{y:.0%}} still around<extra></extra>")
+    fig.update_yaxes(tickformat=".0%", range=[0, 1.02], title="Artists still in rotation")
+    fig.update_xaxes(title="Months since you discovered the artist")
+    fig.update_layout(margin=dict(t=40))
     return fig

@@ -422,12 +422,17 @@ def places(df):
 
 # 9. Sessions -------------------------------------------------------------------
 
-def sessions(df):
-    years = main_years(df)
-    sub = df[df["year"].isin(years)].sort_values("ts_utc").copy()
+def assign_sessions(df):
+    """Return a copy of the main-years plays, time-sorted, with a `session` id column."""
+    sub = df[df["year"].isin(main_years(df))].sort_values("ts_utc").copy()
     start = sub["ts_utc"] - pd.to_timedelta(sub["ms_played"], unit="ms")
     gap_min = (start - sub["ts_utc"].shift()).dt.total_seconds().div(60)
     sub["session"] = (gap_min.isna() | (gap_min > SESSION_GAP_MIN)).cumsum()
+    return sub
+
+
+def sessions(df):
+    sub = assign_sessions(df)
     sub["start_local"] = sub["ts_local"]
     s = sub.groupby("session").agg(start=("start_local", "min"), end=("end_local", "max"),
                                    minutes=("minutes", "sum"), tracks=("is_stream", "sum"),

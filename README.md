@@ -18,6 +18,14 @@ The report covers:
 11. **Search**: repeated searches and what you clicked
 12. **Wrapped & Sound Capsule**: Spotify's summaries checked against the raw history
 
+Deep dive (multi-dimensional analysis):
+
+13. **Your music scenes**: artists you play in the same sessions form a co-listening network. Louvain community detection splits it into "scenes", shown as an interactive map plus each scene's share per year, and betweenness centrality finds the "bridge" artists that connect scenes
+14. **What makes you skip**: a gradient-boosting model predicts skips from context (how the track started, position in the session, the previous skip, familiarity, device and more). It's tested on the latest two years, explained with permutation importance, and broken down by start × familiarity
+15. **Artist retention**: cohort heatmap (of the artists you got into each year, how many you still play N months later), Kaplan–Meier survival curves (chosen vs autoplayed discoveries), slow burners
+16. **Genres & origins** *(needs enrichment)*: genre mix and diversity per year, and artists' countries of origin
+17. **Suggestions** *(needs enrichment)*: artists you've never played that ListenBrainz links to your favourites, balanced across your scenes; "out of your bubble" picks in genres you rarely play; genre keywords and "This Is" searches that open Spotify search directly
+
 ## 1. Get your data
 
 Request your data at <https://www.spotify.com/account/privacy/>. Tick both:
@@ -47,7 +55,16 @@ python3 -m venv .venv
 open output/report.html
 ```
 
-Options: `--data PATH` (export folder) and `--out PATH` (HTML file to write).
+Options: `--data PATH` (export folder), `--out PATH` (HTML file to write) and `--cache PATH` (enrichment cache).
+
+### Optional: genres and suggestions
+
+```bash
+.venv/bin/python enrich.py      # one-off, ~20–30 min; re-runs only fetch what's missing
+.venv/bin/python build_report.py
+```
+
+`enrich.py` looks up the artists you've streamed at least 20 times on [MusicBrainz](https://musicbrainz.org) (artist id, genres, country), using one of their tracks to pick the right artist. It then asks [ListenBrainz](https://listenbrainz.org) for similar artists. Only artist and track names are sent. The answers are cached in `Analysis/cache/musicbrainz.json`, which is git-ignored, so the report build itself stays offline. Without the cache, the genre and suggestion sections are skipped.
 
 The report is a single file and works offline: plotly.js is embedded, so it doesn't need a CDN. It follows your system's light or dark theme, and the button in the top-right corner switches theme manually.
 
@@ -55,11 +72,14 @@ The report is a single file and works offline: plotly.js is embedded, so it does
 
 ```
 Analysis/
-├── build_report.py            # CLI entry point
+├── build_report.py            # CLI entry point: builds the report
+├── enrich.py                  # optional: fetch genres and similar artists (cached)
 ├── requirements.txt
 └── spotify_analysis/
     ├── load.py                # read the export, keep music only, local time, drop personal fields
     ├── metrics.py             # one function per report section → tables and insight sentences
+    ├── deep.py                # scenes, skip model, retention, genres, suggestions
+    ├── enrich.py              # MusicBrainz / ListenBrainz client with on-disk cache
     ├── charts.py              # Plotly figures and the colour palette
     └── report.py              # HTML page, CSS and JS (theme, data tables, top-chart widget)
 ```
@@ -74,6 +94,6 @@ Analysis/
 
 ## Privacy
 
-`Data/` and `Analysis/output/` are in `.gitignore`, so neither your raw export nor your generated report gets committed.
+`Data/`, `Analysis/output/` and `Analysis/cache/` are in `.gitignore`, so neither your raw export nor your generated report gets committed.
 The loader drops IP addresses, the podcast and audiobook fields, and never reads identity, payment or follower files.
 The report still shows track and artist names and the countries you played from, so treat it as personal.

@@ -4,6 +4,9 @@ Data/
 # Generated report: contains your listening history (remove this line to publish it)
 Analysis/output/
 
+# MusicBrainz/ListenBrainz lookups derived from your listening (rebuild with enrich.py)
+Analysis/cache/
+
 # Python
 .venv/
 __pycache__/

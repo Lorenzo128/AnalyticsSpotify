@@ -9,6 +9,7 @@ import plotly.io as pio
 from plotly.offline import get_plotlyjs
 
 from . import charts as C
+from . import deep as D
 from . import metrics as M
 
 
@@ -313,6 +314,149 @@ def build_sections(df, acct, page):
     return secs, tc
 
 
+# Deep-dive sections --------------------------------------------------------------
+
+ENRICH_HINT = ("Run <code>python enrich.py</code> once to fetch genres and similar artists from MusicBrainz and "
+               "ListenBrainz, then rebuild the report.")
+
+
+def chips(items):
+    out = []
+    for i in items:
+        note = f"<small>{esc(i['note'])}</small>" if i.get("note") else ""
+        out.append(f'<a class="chip" href="{esc(i["url"])}" target="_blank" rel="noopener">'
+                   f'<span>{esc(i["q"])}</span>{note}</a>')
+    return '<div class="chips">' + "".join(out) + "</div>"
+
+
+def rec_cards(cards):
+    out = []
+    for c in cards:
+        meta = esc(" · ".join(c["genres"])) if c["genres"] else esc(c.get("comment") or "")
+        why = esc(", ".join(c["because"]))
+        out.append(f'<a class="rec" href="{esc(c["url"])}" target="_blank" rel="noopener"><b>{esc(c["name"])}</b>'
+                   f'<span class="g">{meta}</span><span class="why">Because you play {why}</span></a>')
+    return '<div class="recs">' + "".join(out) + "</div>"
+
+
+def note_card(html_text):
+    return f'<div class="card wide"><p class="sub" style="margin:0">{html_text}</p></div>'
+
+
+def build_deep_sections(df, cache, page):
+    secs = []
+
+    sc = D.artist_communities(df, cache)
+    named = {g["id"]: g for g in sc["groups"]}
+    scene_rows = [[sc["names"][gid], len(g["members"]), f"{g['hours']:,.0f}", ", ".join(g["members"][:6])]
+                  for gid, g in named.items()]
+    bridge_rows = [[b["artist"], sc["names"].get(sc["scene_of"][b["artist"]], "Other scenes"),
+                    "; ".join(sc["names"].get(x, "Other scenes") for x in b["links"])] for b in sc["bridges"]]
+    secs.append(("scenes", "Scenes", section(
+        "scenes", "Your music scenes",
+        "Artists you play in the same listening sessions, grouped by a community-detection algorithm (Louvain). "
+        "No genre labels needed: these are your own scenes.",
+        insights(sc["insights"]),
+        grid(page.chart(C.network(sc["nodes"], sc["edges"], sc["names"]), "Map of your top artists",
+                        "Each dot is an artist (size = hours). Linked artists often share a session. Colour and shape "
+                        "mark the scene. Hover for names; click a legend entry to hide a scene."
+                        + (f" {sc['n_off_map']} artists with no strong links are left off the map." if sc["n_off_map"] else ""),
+                        wide=True),
+             page.chart(C.stacked(sc["yearly"], pct=True, hover_fmt=".0%", height=340).update_xaxes(type="category"),
+                        "Share of listening per scene, by year", wide=True),
+             table("The scenes", ["Scene", "Artists", "Hours", "Biggest artists"], scene_rows, num_cols=(1, 2), wide=True),
+             table("Bridge artists", ["Artist", "Scene", "Also linked to"], bridge_rows,
+                   sub="Artists that most often connect otherwise separate scenes (betweenness centrality).", wide=True)))))
+
+    sk = D.skip_model(df)
+    imp = sk["importance"].head(10)
+    secs.append(("skips", "Skips", section(
+        "skips", "What makes you skip",
+        "A gradient-boosting model learns to predict whether you'll skip a track from its context. "
+        "Feature importance shows what it relies on most.",
+        insights(sk["insights"]),
+        grid(page.chart(C.bars(imp.index.tolist(), imp.values.round(4), horizontal=True, hover="%{y:.3f} AUC lost",
+                               height=340), "What predicts a skip",
+                        "How much the model's accuracy (AUC) drops when each signal is scrambled."),
+             page.chart(C.matrix_heatmap(sk["grid"], xtitle="How many times you'd played the track", colorbar="skipped",
+                                         height=340, zmax=1),
+                        "Skip rate by how a track started × familiarity",
+                        "Blank cells have fewer than 50 plays."),
+             page.chart(C.bars(sk["by_familiarity"].index.astype(str).tolist(), sk["by_familiarity"].values.round(3),
+                               hover="%{y:.0%} skipped", tickformat=".0%", height=280),
+                        "Skip rate by how often you'd heard the track"),
+             page.chart(C.bars(sk["by_position"].index.astype(str).tolist(), sk["by_position"].values.round(3),
+                               hover="%{y:.0%} skipped", tickformat=".0%", height=280),
+                        "Skip rate by position in the session")))))
+
+    rt = D.retention(df)
+    rparts = [page.chart(C.matrix_heatmap(rt["matrix"], xtitle="Months after discovery", colorbar="still playing",
+                                          height=300, zmax=0.8),
+                         "Retention by discovery year",
+                         "Share of the artists you got into each year that you still played N months later.",
+                         wide=True),
+              page.chart(C.survival(rt["curves"]), "How long artists last",
+                         "Kaplan–Meier survival from first to last stream. Artists played in the last 90 days count as still going.")]
+    if len(rt["slow"]):
+        rparts.append(table("Slow burners", ["Artist", "Discovered", "Peak month", "Hours"],
+                            [[a, str(r["first"]), str(r["peak"]), f"{r['hours']:,.0f}"] for a, r in rt["slow"].iterrows()],
+                            sub="Artists whose biggest month came at least 6 months after you found them.",
+                            num_cols=(3,)))
+    if len(rt["flash"]) >= 3:
+        rparts.append(table("Flash in the pan", ["Artist", "Discovered", "Hours in first 60 days", "Last played"],
+                            [[a, M.fmt_date(r["first"]), f"{r.h60:.1f}", M.fmt_date(r["last"])]
+                             for a, r in rt["flash"].iterrows()],
+                            sub="Big at first, gone within six months.", num_cols=(2,), wide=True))
+    secs.append(("retention", "Retention", section(
+        "retention", "Artist retention",
+        "Cohort analysis: of the artists you got into (3+ streams in their first month), how many stuck?",
+        insights(rt["insights"]), grid(*rparts))))
+
+    gd = D.genres(df, cache)
+    if gd:
+        tg = gd["total"].head(15)
+        secs.append(("genres", "Genres", section(
+            "genres", "Genres & origins", "Genres and artists' countries of origin, from MusicBrainz.",
+            insights(gd["insights"]),
+            grid(page.chart(C.stacked(gd["yearly"], pct=True, hover_fmt=".0%", height=360).update_xaxes(type="category"),
+                            "Genre share per year", wide=True),
+                 page.chart(C.bars(tg.index.tolist(), tg.values.round(0), horizontal=True, hover="%{y:,.0f} h", height=400),
+                            "Top genres, all time (hours)"),
+                 page.chart(C.stacked(gd["origins"], pct=True, hover_fmt=".0%", height=400).update_xaxes(type="category"),
+                            "Where your artists come from"),
+                 page.chart(C.bars([str(y) for y in gd["diversity"].index], gd["diversity"].values.round(1),
+                                   hover="%{y:.1f} genres", height=260),
+                            "Genre diversity per year", "Effective number of genres (exp of Shannon entropy).", wide=True)))))
+
+    forgotten = M.discovery(df)["forgotten"]
+    sg = D.suggestions(df, cache, gd, forgotten, scenes=sc)
+    if sg:
+        parts = [insights(sg["insights"])]
+        cards = []
+        if sg["keywords"]:
+            cards.append('<div class="card wide"><h3>Genres to search</h3><p class="sub">Genres around the artists '
+                         'recommended to you that are a small part of your listening. Each one opens a Spotify search.</p>'
+                         + chips(sg["keywords"]) + "</div>")
+        for name, scene_cards in sg["by_scene"]:
+            cards.append(f'<div class="card wide"><h3>For your {esc(name)} side</h3>'
+                         + rec_cards(scene_cards) + "</div>")
+        if sg["bubble"]:
+            cards.append('<div class="card wide"><h3>Out of your bubble</h3><p class="sub">Still linked to artists you '
+                         'love, but in genres you hardly play.</p>' + rec_cards(sg["bubble"]) + "</div>")
+        if sg["revisit"]:
+            cards.append('<div class="card wide"><h3>Rediscover</h3><p class="sub">Spotify\'s "This Is" playlists for '
+                         'artists you played a lot in your first years and have almost dropped.</p>' + chips(sg["revisit"]) + "</div>")
+        parts.append(grid(*cards))
+        secs.append(("suggestions", "Suggestions", section(
+            "suggestions", "Suggestions: get out of the bubble",
+            "Search terms and artists picked from open listening data, outside Spotify's own algorithm.", *parts)))
+    else:
+        secs.append(("suggestions", "Suggestions", section(
+            "suggestions", "Suggestions: get out of the bubble", "Needs the optional enrichment step.",
+            grid(note_card(ENRICH_HINT)))))
+    return secs
+
+
 def esc_name(series, i):
     if i >= len(series):
         return ""
@@ -422,6 +566,19 @@ td{border-bottom:1px solid var(--grid);padding:6px 10px 6px 0;vertical-align:top
 .highlights{margin:0;padding-left:18px;color:var(--ink2)}
 .highlights li{margin:4px 0}
 .highlights b{color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;flex-direction:column;gap:0;padding:6px 14px;border-radius:999px;border:1px solid var(--border);
+  text-decoration:none;color:var(--ink);background:var(--plane);line-height:1.3}
+.chip:hover{border-color:var(--accent);background:var(--accent-wash)}
+.chip small{color:var(--muted);font-size:11px}
+.recs{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.rec{display:flex;flex-direction:column;gap:2px;padding:12px 14px;border-radius:10px;border:1px solid var(--border);
+  text-decoration:none;color:var(--ink);background:var(--plane)}
+.rec:hover{border-color:var(--accent);background:var(--accent-wash)}
+.rec b{font-size:15px}
+.rec .g{font-size:12px;color:var(--ink2)}
+.rec .why{font-size:12px;color:var(--muted)}
+code{font-size:13px;background:var(--accent-wash);padding:1px 5px;border-radius:4px}
 footer{margin-top:56px;color:var(--muted);font-size:13px}
 @media (max-width:760px){
   .grid{grid-template-columns:minmax(0,1fr)}
@@ -585,9 +742,10 @@ def _script_json(obj):
     return json.dumps(obj, ensure_ascii=False, default=str).replace("</", "<\\/")
 
 
-def build_report(df, acct, generated=None):
+def build_report(df, acct, cache=None, generated=None):
     page = Page()
     secs, tc = build_sections(df, acct, page)
+    secs += build_deep_sections(df, cache, page)
     start, end = df["date"].min(), df["date"].max()
     nav = "".join(f'<a href="#{sid}">{esc(label)}</a>' for sid, label, _ in secs)
     body = "".join(html_ for _, _, html_ in secs)

@@ -94,6 +94,8 @@ Analysis/
 
 ## Privacy
 
-`Data/`, `Analysis/output/` and `Analysis/cache/` are in `.gitignore`, so neither your raw export nor your generated report gets committed.
+`Data/` and `Analysis/cache/` are in `.gitignore`, so your raw export and the lookup cache are never committed.
+The generated report (`Analysis/output/report.html`) **is** committed in this repo. Keep the repo private, or add
+`Analysis/output/` back to `.gitignore` if you fork it to publish your own code.
 The loader drops IP addresses, the podcast and audiobook fields, and never reads identity, payment or follower files.
 The report still shows track and artist names and the countries you played from, so treat it as personal.

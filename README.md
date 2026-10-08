@@ -1,5 +1,7 @@
 # Spotify music listening report
 
+**[View the report →](https://claude.ai/artifact/XUXUHdgvDyUryEMZruRzYV)** (private link: sign in to claude.ai to open it)
+
 Turns a Spotify data export into a single interactive HTML report about your **music** listening.
 Podcasts, audiobooks, video and technical logs are left out.
 
